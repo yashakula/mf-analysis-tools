@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 
-const API_URL = 'http://localhost:5001/api'
+const API_URL = import.meta.env.PROD ? '/api' : 'http://localhost:5001/api'
 
 interface Holding {
   name: string
