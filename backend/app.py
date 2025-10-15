@@ -1,229 +1,133 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import pandas as pd
 import os
-from dotenv import load_dotenv
-from analysis.portfolio_analyzer import PortfolioAnalyzer
-from storage_handler import StorageHandler
-from models import MutualFund
-import io
-
-# Load environment variables
-load_dotenv()
+import csv
 
 app = Flask(__name__)
 CORS(app)
 
-# Initialize storage handler
-storage = StorageHandler()
+DATA_DIR = '../data'
 
-# Cache for loaded funds
-fund_cache = {}
+def load_csv_simple(filename):
+    """Load CSV using Python's csv module to handle embedded commas"""
+    filepath = os.path.join(DATA_DIR, filename)
 
+    with open(filepath, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
 
-def discover_available_funds():
-    """Dynamically discover available funds from storage"""
-    files = storage.list_available_files()
-    funds = {}
+    return rows
 
-    for filename in files:
-        # Generate fund ID from filename
-        fund_id = filename.replace('.csv', '').replace('_', '-')
-        fund_name = filename.replace('.csv', '').replace('_', ' ').title()
+def parse_fund_simple(rows, fund_name):
+    """Parse fund data from CSV rows"""
+    # Detect format by checking keys
+    keys = rows[0].keys() if rows else []
 
-        funds[fund_id] = {
-            'id': fund_id,
-            'name': fund_name,
-            'file': filename
-        }
+    if 'Company Name' in keys:
+        name_col = 'Company Name'
+        weight_col = '% Portfolio Weight'
+        sector_col = 'Sector'
+    else:
+        name_col = 'Holding Name'
+        weight_col = '% Portfolio'
+        sector_col = 'Sector'
 
-    return funds
+    holdings = []
+    for row in rows:
+        try:
+            name = row.get(name_col, '').strip()
+            weight_str = row.get(weight_col, '0')
+            sector = row.get(sector_col, 'Unknown')
 
+            if not name or name == '':
+                continue
 
-def get_fund(fund_id: str) -> MutualFund:
-    """Load fund from cache or storage"""
-    if fund_id in fund_cache:
-        return fund_cache[fund_id]
+            # Clean weight string
+            weight_str = str(weight_str).replace('%', '').strip()
+            if weight_str == '':
+                continue
 
-    # Discover available funds
-    available_funds = discover_available_funds()
+            weight = float(weight_str)
 
-    if fund_id not in available_funds:
-        raise ValueError(f"Fund {fund_id} not found")
+            holdings.append({
+                'name': name,
+                'weight': round(weight, 2),
+                'sector': sector
+            })
+        except:
+            continue
 
-    fund_info = available_funds[fund_id]
-    filename = fund_info['file']
+    # Sort alphabetically by name
+    holdings.sort(key=lambda x: x['name'])
 
-    # Read CSV from storage (local or blob)
-    df = storage.read_csv(filename)
+    return {
+        'fund_name': fund_name,
+        'holdings': holdings,
+        'total_stocks': len(holdings)
+    }
 
-    if df is None:
-        raise ValueError(f"Could not read fund data for {fund_id}")
+@app.route('/api/health')
+def health():
+    return jsonify({'status': 'ok'})
 
-    # Load fund from dataframe
-    fund = PortfolioAnalyzer.load_fund_from_dataframe(df, fund_info['name'])
-    fund_cache[fund_id] = fund
-
-    return fund
-
-
-@app.route('/api/funds', methods=['GET'])
-def list_funds():
-    """List all available funds"""
-    available_funds = discover_available_funds()
-    return jsonify({
-        'funds': list(available_funds.values()),
-        'storage': storage.get_storage_info()
-    })
-
-
-@app.route('/api/fund/<fund_id>', methods=['GET'])
-def get_fund_details(fund_id):
-    """Get details for a specific fund"""
-    try:
-        fund = get_fund(fund_id)
-        summary = PortfolioAnalyzer.get_fund_summary(fund)
-
-        return jsonify({
-            'success': True,
-            'fund': summary
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 400
-
+@app.route('/api/funds')
+def get_funds():
+    files = [f for f in os.listdir(DATA_DIR) if f.endswith('.csv')]
+    funds = [{'id': f.replace('.csv', ''), 'name': f.replace('.csv', '').replace('_', ' ').title()}
+             for f in files]
+    return jsonify({'funds': funds})
 
 @app.route('/api/compare', methods=['POST'])
-def compare_funds():
-    """Compare two mutual funds"""
+def compare():
     try:
         data = request.json
-        fund1_id = data.get('fund1_id')
-        fund2_id = data.get('fund2_id')
+        fund1_file = data['fund1_id'] + '.csv'
+        fund2_file = data['fund2_id'] + '.csv'
 
-        if not fund1_id or not fund2_id:
-            return jsonify({
-                'success': False,
-                'error': 'Both fund1_id and fund2_id are required'
-            }), 400
+        # Load data
+        rows1 = load_csv_simple(fund1_file)
+        rows2 = load_csv_simple(fund2_file)
 
-        if fund1_id == fund2_id:
-            return jsonify({
-                'success': False,
-                'error': 'Cannot compare a fund with itself'
-            }), 400
-
-        # Load funds
-        fund1 = get_fund(fund1_id)
-        fund2 = get_fund(fund2_id)
+        # Parse
+        fund1 = parse_fund_simple(rows1, data['fund1_id'])
+        fund2 = parse_fund_simple(rows2, data['fund2_id'])
 
         # Calculate overlap
-        overlap = PortfolioAnalyzer.calculate_overlap(fund1, fund2)
+        fund1_holdings = {h['name']: h['weight'] for h in fund1['holdings']}
+        fund2_holdings = {h['name']: h['weight'] for h in fund2['holdings']}
 
-        # Get fund summaries
-        fund1_summary = PortfolioAnalyzer.get_fund_summary(fund1)
-        fund2_summary = PortfolioAnalyzer.get_fund_summary(fund2)
+        common_stocks = set(fund1_holdings.keys()) & set(fund2_holdings.keys())
+
+        overlap_percentage = 0.0
+        overlapping_stocks = []
+
+        for stock in common_stocks:
+            min_weight = min(fund1_holdings[stock], fund2_holdings[stock])
+            overlap_percentage += min_weight
+            overlapping_stocks.append({
+                'name': stock,
+                'fund1_weight': fund1_holdings[stock],
+                'fund2_weight': fund2_holdings[stock],
+                'min_weight': round(min_weight, 2)
+            })
+
+        # Sort overlapping stocks alphabetically
+        overlapping_stocks.sort(key=lambda x: x['name'])
 
         return jsonify({
             'success': True,
+            'fund1': fund1,
+            'fund2': fund2,
             'overlap': {
-                'fund1_name': overlap.fund1_name,
-                'fund2_name': overlap.fund2_name,
-                'common_stocks': overlap.common_stocks,
-                'overlap_percentage': overlap.overlap_percentage,
-                'weighted_overlap': overlap.weighted_overlap,
-                'common_stocks_count': overlap.common_stocks_count,
-                'fund1_unique_count': overlap.fund1_unique_count,
-                'fund2_unique_count': overlap.fund2_unique_count,
-                'sector_overlap': overlap.sector_overlap,
-                'diversification_score': overlap.diversification_score
-            },
-            'fund1': fund1_summary,
-            'fund2': fund2_summary
+                'percentage': round(overlap_percentage, 2),
+                'common_stocks_count': len(common_stocks),
+                'stocks': overlapping_stocks
+            }
         })
-
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/upload', methods=['POST'])
-def upload_fund():
-    """Upload a new fund CSV file"""
-    try:
-        if 'file' not in request.files:
-            return jsonify({
-                'success': False,
-                'error': 'No file provided'
-            }), 400
-
-        file = request.files['file']
-        fund_name = request.form.get('fund_name', file.filename.replace('.csv', ''))
-
-        if file.filename == '':
-            return jsonify({
-                'success': False,
-                'error': 'No file selected'
-            }), 400
-
-        if not file.filename.endswith('.csv'):
-            return jsonify({
-                'success': False,
-                'error': 'Only CSV files are allowed'
-            }), 400
-
-        # Read file content
-        content = file.read()
-
-        # Upload to storage
-        success = storage.upload_csv(file.filename, content)
-
-        if success:
-            # Clear cache to refresh available funds
-            fund_cache.clear()
-
-            return jsonify({
-                'success': True,
-                'message': f'Fund {fund_name} uploaded successfully',
-                'filename': file.filename
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Failed to upload file'
-            }), 500
-
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/storage/info', methods=['GET'])
-def storage_info():
-    """Get storage configuration information"""
-    return jsonify({
-        'success': True,
-        'storage': storage.get_storage_info()
-    })
-
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    storage_info = storage.get_storage_info()
-    return jsonify({
-        'status': 'healthy',
-        'message': 'MF Analysis API is running',
-        'storage': storage_info
-    })
-
+        import traceback
+        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()}), 500
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    debug = os.getenv('DEBUG', 'True').lower() == 'true'
-    app.run(debug=debug, port=port)
+    app.run(port=5001, debug=True)
