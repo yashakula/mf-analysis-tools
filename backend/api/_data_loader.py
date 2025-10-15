@@ -11,47 +11,56 @@ def load_csv_from_blob(filename):
     In production, this will fetch from Vercel Blob
     In development, falls back to local files
     """
-    try:
-        # Try to use Vercel Blob in production
-        import requests
+    blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
 
-        blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
-        if blob_token:
-            # List all blobs to find the file URL
-            list_url = "https://blob.vercel-storage.com/"
+    if blob_token:
+        try:
+            import requests
+
+            # Vercel Blob API endpoint
+            api_url = "https://blob.vercel-storage.com"
             headers = {"Authorization": f"Bearer {blob_token}"}
 
-            # List blobs with prefix
+            # First, list blobs to find the one we want
             list_response = requests.get(
-                list_url,
+                api_url,
                 headers=headers,
                 params={"prefix": f"data/{filename}"}
             )
 
             if list_response.status_code == 200:
-                blobs = list_response.json().get('blobs', [])
-                if blobs:
-                    # Get the first matching blob's download URL
-                    blob_url = blobs[0]['downloadUrl']
+                data = list_response.json()
+                blobs = data.get('blobs', [])
 
-                    # Download the CSV content
-                    download_response = requests.get(blob_url)
-                    if download_response.status_code == 200:
-                        content = download_response.text
-                        reader = csv.DictReader(StringIO(content))
-                        return list(reader)
-    except (ImportError, Exception) as e:
-        # Log error for debugging
-        print(f"Blob loading error: {e}")
-        pass
+                if blobs and len(blobs) > 0:
+                    # Get the download URL from the blob
+                    blob_url = blobs[0].get('downloadUrl') or blobs[0].get('url')
+
+                    if blob_url:
+                        # Fetch the CSV content
+                        download_response = requests.get(blob_url)
+                        if download_response.status_code == 200:
+                            content = download_response.text
+                            reader = csv.DictReader(StringIO(content))
+                            return list(reader)
+
+        except Exception as e:
+            # Log error for debugging
+            print(f"Blob loading error for {filename}: {e}")
+            import traceback
+            traceback.print_exc()
 
     # Fallback to local files for development
-    data_dir = os.path.join(os.path.dirname(__file__), '../../data')
-    filepath = os.path.join(data_dir, filename)
+    try:
+        data_dir = os.path.join(os.path.dirname(__file__), '../../data')
+        filepath = os.path.join(data_dir, filename)
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        return list(reader)
+        with open(filepath, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            return list(reader)
+    except Exception as e:
+        print(f"Local file loading error for {filename}: {e}")
+        return []
 
 def parse_fund_simple(rows, fund_name):
     """Parse fund data from CSV rows"""
@@ -100,46 +109,59 @@ def parse_fund_simple(rows, fund_name):
 
 def get_available_funds():
     """Get list of available funds"""
-    try:
-        import requests
+    blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
 
-        blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
-        if blob_token:
-            # List files in Vercel Blob
-            list_url = "https://blob.vercel-storage.com/"
+    if blob_token:
+        try:
+            import requests
+
+            # Vercel Blob API endpoint
+            api_url = "https://blob.vercel-storage.com"
             headers = {"Authorization": f"Bearer {blob_token}"}
 
+            # List all blobs with 'data/' prefix
             list_response = requests.get(
-                list_url,
+                api_url,
                 headers=headers,
-                params={"prefix": "data/"}
+                params={"prefix": "data/", "limit": "1000"}
             )
 
             if list_response.status_code == 200:
-                blobs = list_response.json().get('blobs', [])
+                data = list_response.json()
+                blobs = data.get('blobs', [])
+
                 funds = []
                 for blob in blobs:
                     pathname = blob.get('pathname', '')
-                    filename = pathname.replace('data/', '')
-                    if filename.endswith('.csv'):
+                    # Extract filename from pathname (e.g., 'data/fund.csv' -> 'fund.csv')
+                    if pathname.startswith('data/') and pathname.endswith('.csv'):
+                        filename = pathname.replace('data/', '', 1)
                         fund_id = filename.replace('.csv', '')
                         funds.append({
                             'id': fund_id,
                             'name': fund_id.replace('_', ' ').title()
                         })
-                return funds
-    except (ImportError, Exception) as e:
-        # Log error for debugging
-        print(f"Fund listing error: {e}")
-        pass
 
-    # Fallback to local files
-    data_dir = os.path.join(os.path.dirname(__file__), '../../data')
-    files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
-    return [
-        {
-            'id': f.replace('.csv', ''),
-            'name': f.replace('.csv', '').replace('_', ' ').title()
-        }
-        for f in files
-    ]
+                return funds
+            else:
+                print(f"Blob API error: {list_response.status_code} - {list_response.text}")
+
+        except Exception as e:
+            print(f"Error listing funds from blob: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Fallback to local files for development
+    try:
+        data_dir = os.path.join(os.path.dirname(__file__), '../../data')
+        files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
+        return [
+            {
+                'id': f.replace('.csv', ''),
+                'name': f.replace('.csv', '').replace('_', ' ').title()
+            }
+            for f in files
+        ]
+    except Exception as e:
+        print(f"Error listing local files: {e}")
+        return []
