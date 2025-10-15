@@ -13,17 +13,36 @@ def load_csv_from_blob(filename):
     """
     try:
         # Try to use Vercel Blob in production
-        from vercel_blob import get
+        import requests
 
-        # Construct blob URL from environment variable
         blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
         if blob_token:
-            # Fetch from Vercel Blob
-            response = get(f"data/{filename}")
-            content = response.decode('utf-8')
-            reader = csv.DictReader(StringIO(content))
-            return list(reader)
-    except (ImportError, Exception):
+            # List all blobs to find the file URL
+            list_url = "https://blob.vercel-storage.com/"
+            headers = {"Authorization": f"Bearer {blob_token}"}
+
+            # List blobs with prefix
+            list_response = requests.get(
+                list_url,
+                headers=headers,
+                params={"prefix": f"data/{filename}"}
+            )
+
+            if list_response.status_code == 200:
+                blobs = list_response.json().get('blobs', [])
+                if blobs:
+                    # Get the first matching blob's download URL
+                    blob_url = blobs[0]['downloadUrl']
+
+                    # Download the CSV content
+                    download_response = requests.get(blob_url)
+                    if download_response.status_code == 200:
+                        content = download_response.text
+                        reader = csv.DictReader(StringIO(content))
+                        return list(reader)
+    except (ImportError, Exception) as e:
+        # Log error for debugging
+        print(f"Blob loading error: {e}")
         pass
 
     # Fallback to local files for development
@@ -82,23 +101,36 @@ def parse_fund_simple(rows, fund_name):
 def get_available_funds():
     """Get list of available funds"""
     try:
-        from vercel_blob import list as blob_list
+        import requests
 
         blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
         if blob_token:
             # List files in Vercel Blob
-            blobs = blob_list(prefix="data/")
-            funds = []
-            for blob in blobs.get('blobs', []):
-                filename = blob['pathname'].replace('data/', '')
-                if filename.endswith('.csv'):
-                    fund_id = filename.replace('.csv', '')
-                    funds.append({
-                        'id': fund_id,
-                        'name': fund_id.replace('_', ' ').title()
-                    })
-            return funds
-    except (ImportError, Exception):
+            list_url = "https://blob.vercel-storage.com/"
+            headers = {"Authorization": f"Bearer {blob_token}"}
+
+            list_response = requests.get(
+                list_url,
+                headers=headers,
+                params={"prefix": "data/"}
+            )
+
+            if list_response.status_code == 200:
+                blobs = list_response.json().get('blobs', [])
+                funds = []
+                for blob in blobs:
+                    pathname = blob.get('pathname', '')
+                    filename = pathname.replace('data/', '')
+                    if filename.endswith('.csv'):
+                        fund_id = filename.replace('.csv', '')
+                        funds.append({
+                            'id': fund_id,
+                            'name': fund_id.replace('_', ' ').title()
+                        })
+                return funds
+    except (ImportError, Exception) as e:
+        # Log error for debugging
+        print(f"Fund listing error: {e}")
         pass
 
     # Fallback to local files
