@@ -17,15 +17,15 @@ def load_csv_from_blob(filename):
         try:
             import requests
 
-            # Vercel Blob API endpoint
-            api_url = "https://blob.vercel-storage.com"
+            # Vercel Blob list API endpoint
+            list_url = "https://blob.vercel-storage.com/list"
             headers = {"Authorization": f"Bearer {blob_token}"}
 
-            # First, list blobs to find the one we want
-            list_response = requests.get(
-                api_url,
+            # List blobs to find the one we want
+            list_response = requests.post(
+                list_url,
                 headers=headers,
-                params={"prefix": f"data/{filename}"}
+                json={"prefix": f"data/{filename}"}
             )
 
             if list_response.status_code == 200:
@@ -33,11 +33,11 @@ def load_csv_from_blob(filename):
                 blobs = data.get('blobs', [])
 
                 if blobs and len(blobs) > 0:
-                    # Get the download URL from the blob
-                    blob_url = blobs[0].get('downloadUrl') or blobs[0].get('url')
+                    # Get the public URL from the blob
+                    blob_url = blobs[0].get('url')
 
                     if blob_url:
-                        # Fetch the CSV content
+                        # Fetch the CSV content from public URL (no auth needed)
                         download_response = requests.get(blob_url)
                         if download_response.status_code == 200:
                             content = download_response.text
@@ -115,15 +115,15 @@ def get_available_funds():
         try:
             import requests
 
-            # Vercel Blob API endpoint
-            api_url = "https://blob.vercel-storage.com"
+            # Vercel Blob list API endpoint
+            list_url = "https://blob.vercel-storage.com/list"
             headers = {"Authorization": f"Bearer {blob_token}"}
 
             # List all blobs with 'data/' prefix
-            list_response = requests.get(
-                api_url,
+            list_response = requests.post(
+                list_url,
                 headers=headers,
-                params={"prefix": "data/", "limit": "1000"}
+                json={"prefix": "data/", "limit": 1000}
             )
 
             if list_response.status_code == 200:
