@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { loadFund } from '@/lib/dataLoader';
+import { loadFund } from '../../../lib/dataLoader';
 
 export async function POST(request: NextRequest) {
   try {

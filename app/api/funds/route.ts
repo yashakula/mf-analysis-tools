@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getAvailableFunds } from '@/lib/dataLoader';
+import { getAvailableFunds } from '../../../lib/dataLoader';
 
 export async function GET() {
   try {
